@@ -19,15 +19,15 @@ fn main() {
     println!("Hello, world!");
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins((FrameTimeDiagnosticsPlugin::default(), LogDiagnosticsPlugin::default()))
         .init_resource::<MySystems>()
         .add_systems(Startup, setup)
         .add_systems(Update, set_snake_direction)
         .add_systems(Update, move_snake)
         .add_systems(Update, eat.after(move_snake))
         .add_systems(Update, increase_blocks.after(eat))
-        .add_systems(Update, destroy_previous_blocks.after(increase_blocks))
-        .add_systems(Update, create_snake_body.after(destroy_previous_blocks))
-        .add_systems(Update, detect_collisions.after(create_snake_body))
+        .add_systems(Update, adjust_blocks_positions.after(increase_blocks))
+        .add_systems(Update, detect_collisions.after(adjust_blocks_positions))
         .run();
 }
 
@@ -123,7 +123,8 @@ fn move_snake(
 
 fn set_snake_direction(
     mut snake: Query<(&mut IsSnake, &mut Transform, &mut SnakeDirection)>,
-    key: Res<ButtonInput<KeyCode>>,
+    key: Res<ButtonInput<KeyCode>>
+    
 ) {
     let mut snake_ = snake.single_mut();
 
@@ -151,10 +152,13 @@ fn set_snake_direction(
 fn increase_blocks(
     mut snake: Query<(&mut IsSnake, &mut NumBlocks)>,
     key: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut systems: Res<MySystems>
 ) {
     if key.just_pressed(KeyCode::KeyZ) {
         let mut snake_ = snake.single_mut();
         snake_.1.num_blocks += 1u32;
+        commands.run_system(systems.0["create_new_block"]);
         println!("Num blocks {}", snake_.1.num_blocks);
     }
 }
@@ -166,6 +170,7 @@ fn create_snake_body(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let mut snake_ = snake.single_mut();
+
     if snake_.1.num_blocks > 0 {
         for i in snake_
             .2
@@ -188,6 +193,31 @@ fn create_snake_body(
     }
 }
 
+
+fn adjust_blocks_positions(
+    mut blocks: Query<(Entity, &mut SnakeBody, &mut Transform)>,
+    mut snake: Query<(&mut PreviousPositions, &mut IsSnake)>,
+){
+    let mut snake_ = snake.single_mut();
+
+    let positions_needed = blocks.iter().len();
+    let mut positions_len =snake_.0.previous_positions.len();
+
+    let mut new_positions: Vec<Vec3> = Vec::new();
+
+    for mut v in snake_.0.previous_positions.iter().rev().take(positions_needed){
+        new_positions.push(*v);
+    }
+
+
+
+    let mut index: usize = 0;
+    for (e, sb, mut t) in blocks.iter_mut(){
+        t.translation = Vec3::new(new_positions[index].x, new_positions[index].y, new_positions[index].z);
+        index+=1;
+    }
+
+}
 fn destroy_previous_blocks(
     blocks: Query<(Entity, &mut SnakeBody)>,
     mut snake: Query<(&mut IsSnake, &mut NumBlocks)>,
@@ -233,7 +263,7 @@ fn detect_collisions(
     for (c, t) in obstacles.iter() {
         num_obstacles += 1;
         let distance = (t.translation - snake_.1.translation).length();
-        if (distance <= 0.04) {
+        if (distance <= 0.02) {
             println!("Collison detected!");
             println!(
                 "Snake head pos {};{};{} and body block pos {};{};{} with distance: {}",
@@ -255,7 +285,29 @@ fn detect_collisions(
 }
 
 
+fn create_new_block(
+    mut snake: Query<(&mut IsSnake, &mut NumBlocks, &mut PreviousPositions)>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+){
 
+    let mut snake_ = snake.single_mut();
+    let mut position = snake_.2.previous_positions.last().unwrap();
+
+
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Cuboid::default()),
+            material: materials.add(Color::RED),
+            transform: Transform::from_xyz(position.x, position.y, position.z),
+            ..default()
+        },
+        SnakeBody {},
+        Collider {},
+    ));
+
+}
 fn eat(mut snake: Query<
     (
         &mut IsSnake,
@@ -281,6 +333,7 @@ fn eat(mut snake: Query<
     if(distance_total <= distance_params){
         println!("Eat food");
         snake_.3.num_blocks +=1;
+        commands.run_system(systems.0["create_new_block"]);
         commands.entity(food_.0).despawn();
         commands.run_system(systems.0["gen_food"]);
 
@@ -363,6 +416,10 @@ impl FromWorld for MySystems{
             world.register_system(destroy_previous_blocks)
         );
 
+        my_systems_hash.0.insert(
+            "create_new_block".into(),
+            world.register_system(create_new_block)
+        );
 
         my_systems_hash
     }
